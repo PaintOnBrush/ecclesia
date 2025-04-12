@@ -21,13 +21,13 @@ run third python script. latest version is 3.4 (ai34.py)
 
     If the prompt is found, the Python script opens the file specified by prompts_file_path (which is aiprompts.txt via the argument) in append mode ('a') and writes the new prompt, followed by a newline.
 
-    Important: The newly added prompt will only be used by the batch script the next time run_prompts.bat is executed. The current run of the batch script finishes processing only the prompts that existed when it started.
+    Important: The newly added prompt will only be used by the batch script the next time ai.bat is executed. The current run of the batch script finishes processing only the prompts that existed when it started.
 
 To Use:
 
-    Make sure both scripts (ai34.py, run_prompts.bat) and the file (aiprompts.txt) are updated.
+    Make sure both scripts (ai34.py, ai.bat) and the file (aiprompts.txt) are updated.
 
-    Run run_prompts.bat.
+    Run ai.bat.
 
     Guide the AIs in their conversation:
 
