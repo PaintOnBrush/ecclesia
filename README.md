@@ -3,9 +3,11 @@ make llamacpp with cuda support in c:\users\<users>\workspace\llamacpp
 windows python 3.12
 needs to pip install somethings. 
 
-run both servers bat files
+run both server bat files
 
-run third python script. latest version is 3.4 (ai34.py)
+run third python script. latest version is 4.2 (ai42.py)
+
+for tts it might hook up to windows sapi and have success with piper hosted on wsl2.
 
 ```How it Works Now:
 
