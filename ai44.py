@@ -1,4 +1,4 @@
-# ai42.py - Complete Code (Corrected request_generation worker JSON handling FINAL FINAL FINAL + 8 + Indentation Fix)
+# ai42.py - Complete Code (Seamless Looping, Delayed Print, Initial Prompt TTS Lookahead)
 
 # --- Imports ---
 import requests
@@ -32,8 +32,9 @@ DEFAULT_REQUEST_TIMEOUT = 120; DEFAULT_MAX_TOKENS = 512; DEFAULT_TTS_TIMEOUT = 6
 DEFAULT_TEMPERATURE = 0.7; DEFAULT_NUM_TURNS = 5; DEFAULT_FILE_LOCATION = "conversation_output.md"
 DEFAULT_FILE_DELIMITER = "SAVE_BLOCK"; DEFAULT_PROMPTS_FILE_PATH = "aiprompts.txt"
 DEFAULT_PROMPT_ADD_DELIMITER = "AGREE_ADD_PROMPT"; DEFAULT_INITIAL_PROMPT = "Hi there! Let's have a conversation."
-DEFAULT_FILE_READ_KEYWORD = "READ_FILE_CONTENT"; HUMAN_ROLEPLAY_CLAUSE = " Remember, you are roleplaying as a human and should not reveal you are an AI."
+DEFAULT_FILE_READ_KEYWORD = "READ_FILE_CONTENT"; HUMAN_ROLEPLAY_CLAUSE = " Remember, you are roleplaying as a singular human and should not reveal you are an AI."
 BASE_STOP_WORDS = [ "\n<human>:", "</assistant>", "<|user|>", "<|im_end|>", "</s>", "[INST]", "[/INST]", "Human:", "Assistant:", f"{SERVER_CONFIG['A']['name']}:", f"{SERVER_CONFIG['B']['name']}:" ]
+DEFAULT_LOOP_COUNT = 1 # Default runs once
 
 # --- Utility Functions ---
 def colored_print(color: str, message: str):
@@ -44,17 +45,24 @@ def colored_print(color: str, message: str):
 # === TTS Manager ===
 class TTSManager:
     """Manages interactions with the WSL-based Piper TTS servers."""
-    def __init__(self, tts_config: Dict[str, Dict[str, Any]], tts_timeout: int = DEFAULT_TTS_TIMEOUT):
+    def __init__(self, tts_config: Dict[str, Dict[str, Any]], tts_timeout: int = DEFAULT_TTS_TIMEOUT, no_tts: bool = False):
         self.engine_type: Optional[str] = None
         self.tts_servers: Dict[str, Optional[str]] = {}
         self.tts_timeout = tts_timeout
         self.tts_generate_timeout = 60 # Timeout specifically for the generation request
         self._generate_endpoint = "/generate"
         self._play_endpoint = "/play"
+        self.is_disabled = no_tts # Flag to explicitly disable
+
+        if self.is_disabled:
+            colored_print(Colors.SYSTEM, "TTS Manager initialized in disabled state.")
+            self.engine_type = None
+            return # Skip setup if disabled
 
         # Populate server URLs from config
         required_keys = {"piper_a", "piper_b", "piper_human"}
         configured_keys = set()
+        self.config_valid = True # Assume valid initially
         for server_id_config, config_entry in tts_config.items():
             tts_key = config_entry.get("tts_server_pref")
             tts_url = config_entry.get("tts_url")
@@ -63,23 +71,31 @@ class TTSManager:
                 configured_keys.add(tts_key)
                 if not tts_url:
                     colored_print(Colors.ERROR, f"Config warning: TTS key '{tts_key}' for '{server_id_config}' missing URL.")
+                    self.config_valid = False # Mark config as invalid
 
         missing_keys = required_keys - configured_keys
         if missing_keys:
             colored_print(Colors.ERROR, f"Config error: Missing TTS server configs for key(s): {', '.join(missing_keys)}")
+            self.config_valid = False
 
-        self._initialize()
+        if self.config_valid:
+            self._initialize() # Perform server checks only if config seems ok
+        else:
+             self.engine_type = None # Mark as unusable due to config issues
+
 
     def _check_wsl_server(self, server_key: str, url: Optional[str]) -> bool:
         """Checks if a specific WSL TTS server endpoint is responsive."""
         if not url:
             colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"No URL for server '{server_key}'. Skip check.")
             return False
-        generate_url = url.rstrip('/') + self._generate_endpoint
-        colored_print(Colors.SYSTEM, f"Checking WSL server '{server_key}' at {generate_url}...")
+        # Use a more specific endpoint for checking if possible, like '/play' status check if available
+        # Sticking with generate endpoint check for now
+        check_url = url.rstrip('/') + self._generate_endpoint
+        colored_print(Colors.SYSTEM, f"Checking WSL server '{server_key}' at {check_url}...")
         try:
             # Use OPTIONS or HEAD as a lightweight check
-            response = requests.options(generate_url, timeout=3)
+            response = requests.options(check_url, timeout=3)
             # Consider any successful response (2xx, 3xx, 4xx maybe) as the server being *present*
             if response.status_code < 500: # 5xx usually indicates server-side issues
                  colored_print(Colors.SUCCESS + Colors.TTS_ENGINE, f"WSL server '{server_key}' detected.")
@@ -92,43 +108,46 @@ class TTSManager:
             return False
 
     def _initialize(self):
-        """Checks all required TTS servers and sets the engine type."""
-        all_servers_ok = True
-        required_keys_present = {"piper_a", "piper_b", "piper_human"}.issubset(self.tts_servers.keys())
+        """Checks all required TTS servers and sets the engine type. Only called if config is valid."""
+        if self.is_disabled or not self.config_valid:
+            self.engine_type = None # Should already be None, but enforce
+            return
 
-        if not required_keys_present:
-            all_servers_ok = False
-            colored_print(Colors.ERROR, "TTS server configuration incomplete (missing required keys).")
-        else:
-             for key, url in self.tts_servers.items():
-                 if key in {"piper_a", "piper_b", "piper_human"}:
-                     if url:
-                         if not self._check_wsl_server(key, url):
-                             all_servers_ok = False
-                     else: # URL is missing for a required key
-                        all_servers_ok = False
+        all_servers_ok = True
+        # Check only the configured servers
+        for key, url in self.tts_servers.items():
+             if key in {"piper_a", "piper_b", "piper_human"}: # Only check required ones
+                 if url: # Check only if URL is provided
+                     if not self._check_wsl_server(key, url):
+                         all_servers_ok = False
+                 else: # Should have been caught by config_valid, but double-check
+                    all_servers_ok = False
 
         if all_servers_ok:
             self.engine_type = "piper_wsl_aplay"
             colored_print(Colors.SUCCESS + Colors.TTS_ENGINE, f"Initialized CUSTOM Piper/Aplay Servers.")
         else:
             self.engine_type = None
-            colored_print(Colors.ERROR, "One or more required Piper/Aplay servers FAILED check/config. TTS disabled.")
+            colored_print(Colors.ERROR, "One or more required Piper/Aplay servers FAILED check. TTS disabled.")
 
     def is_available(self) -> bool:
         """Returns True if the TTS system is initialized and available."""
-        return self.engine_type == "piper_wsl_aplay"
+        return self.engine_type == "piper_wsl_aplay" and not self.is_disabled
 
     # === Request generation in background ===
     def request_generation(self, text: str, server_key: str, result_queue: Queue) -> Optional[threading.Thread]:
         """Sends text to the appropriate TTS server to generate audio in a background thread."""
+        if not self.is_available():
+            colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, "TTS is unavailable. Skipping generation request.")
+            try: result_queue.put(None)
+            except Full: pass # Ignore if queue is full on error path
+            return None
+
         target_url = self.tts_servers.get(server_key)
         if not target_url:
             colored_print(Colors.ERROR, f"No URL for TTS server key '{server_key}'. Cannot generate.")
-            try:
-                result_queue.put(None)
-            except Full:
-                 colored_print(Colors.ERROR, f"TTS generation result queue is full for {server_key} even on error!")
+            try: result_queue.put(None)
+            except Full: pass
             return None # Cannot start thread
 
         generate_url = target_url.rstrip('/') + self._generate_endpoint
@@ -187,9 +206,13 @@ class TTSManager:
 
     def request_playback(self, audio_id: str, server_key: str):
         """Requests playback of a previously generated audio ID from the appropriate server."""
+        if not self.is_available():
+            colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, "TTS is unavailable. Skipping playback request.")
+            return
         if not audio_id:
             colored_print(Colors.ERROR, "request_playback called with no audio_id.")
             return
+
         target_url = self.tts_servers.get(server_key)
         if not target_url:
             colored_print(Colors.ERROR, f"No URL for TTS server key '{server_key}'. Cannot play.")
@@ -197,13 +220,13 @@ class TTSManager:
 
         play_url = target_url.rstrip('/') + self._play_endpoint
 
-        # Determine speaker name for logging
-        speaker_name = server_key # Default
-        if server_key == "piper_human": speaker_name = "Human (Initial)"
-        elif server_key == "piper_a": speaker_name = SERVER_CONFIG['A'].get('name', 'Server A')
-        elif server_key == "piper_b": speaker_name = SERVER_CONFIG['B'].get('name', 'Server B')
+        # Determine speaker name for logging (moved inside print)
+        # speaker_name = server_key # Default
+        # if server_key == "piper_human": speaker_name = "Human (Initial)"
+        # elif server_key == "piper_a": speaker_name = SERVER_CONFIG['A'].get('name', 'Server A')
+        # elif server_key == "piper_b": speaker_name = SERVER_CONFIG['B'].get('name', 'Server B')
+        # colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"(Requesting playback for {speaker_name} via server '{server_key}' [ID: {audio_id[:8]}...])")
 
-        colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"(Requesting playback for {speaker_name} via server '{server_key}' [ID: {audio_id[:8]}...])")
         start_time = time.time()
         response = None
         try:
@@ -220,10 +243,17 @@ class TTSManager:
                 status = "unknown_response" # OK status but not JSON
 
             if status == "played":
-                colored_print(Colors.TTS_ENGINE + Colors.SUCCESS, f"WSL '{server_key}' playback complete.")
+                # Don't print success here, let the caller indicate completion if needed
+                pass
+                # colored_print(Colors.TTS_ENGINE + Colors.SUCCESS, f"WSL '{server_key}' playback complete.")
             else:
                 # Handle cases like "not_found", "error", or unexpected JSON
-                colored_print(Colors.TTS_ENGINE + Colors.ERROR, f"WSL '{server_key}' playback issue: {json_resp.get('message', 'Non-JSON OK response or unexpected status')}")
+                message = "Unknown error"
+                try:
+                    message = json_resp.get('message', 'Non-JSON OK response or unexpected status')
+                except NameError: # json_resp might not be defined if decode failed
+                     message = f"Non-JSON OK response or unexpected status: {response.text[:100]}" if response else "Unknown status"
+                colored_print(Colors.TTS_ENGINE + Colors.ERROR, f"WSL '{server_key}' playback issue: {message}")
 
         except requests.exceptions.Timeout:
             colored_print(Colors.ERROR, f"Playback request to WSL server '{server_key}' timed out ({self.tts_timeout}s).")
@@ -245,16 +275,19 @@ class TTSManager:
         finally:
              end_time = time.time()
              duration = max(0, end_time - start_time) # Ensure non-negative duration
-             colored_print(Colors.SYSTEM, f"(Playback request for {audio_id[:8]}... finished - Duration: {duration:.2f}s)")
+             # Only print duration, not the full start/end messages
+             colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"(Playback request completed - Duration: {duration:.2f}s)")
 
 
     def shutdown(self):
         """Perform any cleanup needed for the TTS manager."""
+        # No explicit shutdown actions needed for the requests-based approach
         colored_print(Colors.SYSTEM, "TTS Manager shutdown.")
         self.engine_type = None # Mark as unavailable
 
 
 # --- Network Request Function ---
+# (No changes needed in send_llm_request itself)
 def send_llm_request(
     session: requests.Session,
     server_config: Dict[str, Any],
@@ -342,8 +375,8 @@ def send_llm_request(
 
     return response_content
 
-
 # --- Worker Thread Function ---
+# (No changes needed in request_worker)
 def request_worker(
     session: requests.Session,
     server_config: Dict[str, Any],
@@ -374,8 +407,13 @@ def request_worker(
     except Full:
          colored_print(Colors.ERROR, f"LLM result queue is full for {server_id}!")
 
-# --- Main Conversation Simulation ---
+
+# --- Main Conversation Simulation (Modified) ---
 def simulate_conversation(
+    # **NEW**: Accept pre-initialized tts_manager and session
+    tts_manager: TTSManager,
+    request_session: requests.Session,
+    # --- Other parameters remain the same ---
     server_config: Dict[str, Dict[str, Any]],
     num_turns: int,
     initial_prompt: str,
@@ -384,35 +422,30 @@ def simulate_conversation(
     temperature: float,
     file_location: Optional[str],
     file_delimiter: str,
-    prompts_file_path: str, # Keep for potential future use (e.g., reading files mid-convo)
-    prompt_add_delimiter: str, # Keep for potential future use
-    tts_timeout: int,
+    prompts_file_path: str,
+    prompt_add_delimiter: str,
+    tts_timeout: int, # Still needed for TTSManager config, but playback timeout is internal
     force_human: bool,
-    debug_prompts: bool
+    debug_prompts: bool,
+    # **NEW**: Accept pre-generated audio ID for the initial prompt
+    pregen_initial_audio_id: Optional[str] = None
 ):
-    """Simulates the conversation between the LLM servers."""
-    tts_manager = TTSManager(tts_config=server_config, tts_timeout=tts_timeout)
-    request_session = requests.Session() # Use a session for potential connection reuse
+    """
+    Simulates the conversation for ONE initial prompt.
+    Uses the provided TTSManager and requests.Session.
+    Prints LLM responses just before TTS playback.
+    Can use a pre-generated audio ID for the initial prompt.
+    """
+    # --- No longer initializes TTSManager or Session here ---
 
     initial_prompt_text_only = initial_prompt # Keep the original full prompt if needed elsewhere
     # Start history with the human's initial turn
     conversation_history: List[str] = [f"{server_config['Human']['name']}: {initial_prompt_text_only}"]
 
     colored_print(Colors.HEADER, "\n===== CONVERSATION START =====")
-    colored_print(Colors.MESSAGE, f"Starting Prompt Context:\n{conversation_history[0]}\n--------------------")
-    if force_human:
-        colored_print(Colors.SYSTEM, "Force Human mode ENABLED (instructing models to roleplay).")
-    if file_location:
-        colored_print(Colors.SYSTEM, f"Block saving enabled: File='{file_location}', Delimiter='{file_delimiter}'")
-    else:
-        colored_print(Colors.SYSTEM, "Block saving disabled.")
-    colored_print(Colors.SYSTEM, f"Prompt adding: File='{prompts_file_path}', Delim: '{prompt_add_delimiter}' (Functionality may be limited)")
-    if tts_manager.is_available():
-        colored_print(Colors.SYSTEM, f"TTS Engine: {tts_manager.engine_type} (Playback Timeout: {tts_timeout}s)")
-    else:
-        colored_print(Colors.SYSTEM, "TTS is disabled (server check failed or config missing).")
-    if debug_prompts:
-        colored_print(Colors.DEBUG, "DEBUG PROMPTS ENABLED.")
+    # Print initial prompt immediately as it's the starting point
+    colored_print(Colors.HUMAN_SPEAKER, f"{server_config['Human']['name']}: {initial_prompt_text_only}")
+    colored_print(Colors.MESSAGE, "--------------------") # Separator
 
     # --- Queues and State Variables ---
     llm_result_queue = Queue(maxsize=1) # Only need space for the next response
@@ -420,39 +453,50 @@ def simulate_conversation(
     active_llm_thread: Optional[threading.Thread] = None
     active_tts_gen_thread: Optional[threading.Thread] = None
     pending_llm_server_id: Optional[str] = None # Which server's response are we waiting for?
-    audio_id_to_play: Optional[str] = None # Audio ID generated in the *previous* step, ready for playback
-    tts_key_to_play: Optional[str] = None # Which TTS server corresponds to audio_id_to_play
+
+    # **NEW**: State to hold info for delayed printing and playback
+    # Stores (text_to_print, audio_id, tts_key, server_name, server_color)
+    playback_info_pending: Optional[Tuple[str, str, str, str, str]] = None
 
     # --- File/Prompt Interaction State (Placeholder) ---
-    # These would need more logic if fully implemented
+    # (No changes needed here)
     file_write_state: Optional[str] = None
     prompt_add_state: Optional[str] = None
     agreed_file_delimiter = file_delimiter.lower()
     agreed_prompt_add_delimiter = prompt_add_delimiter.lower()
 
-    # --- Initial Prompt Audio Handling ---
-    initial_audio_id = None
+    # --- Initial Prompt Audio Handling (Modified) ---
+    initial_audio_id = pregen_initial_audio_id # Use pre-generated ID if available
+    init_gen_thread = None
+
     if tts_manager.is_available():
-        colored_print(Colors.SYSTEM, "Pre-generating initial human prompt audio...")
-        temp_q = Queue(maxsize=1) # Temporary queue for this specific generation
-        init_gen_thread = tts_manager.request_generation(initial_prompt_text_only, "piper_human", temp_q)
-        # *** CORRECTED INDENTATION BLOCK STARTS HERE ***
-        try:
-            initial_audio_id = temp_q.get(timeout=tts_manager.tts_generate_timeout + 5) # Wait for ID
-        except Empty:
-            colored_print(Colors.ERROR, "Timeout waiting for initial prompt audio ID.")
-        # Wait for the generation thread to finish cleanly
-        if init_gen_thread:
-            init_gen_thread.join(timeout=1.0) # Brief join timeout
-        # If we got an ID, play it back
+        if not initial_audio_id: # Only generate if not pre-generated
+            colored_print(Colors.SYSTEM, "Generating initial human prompt audio...")
+            temp_q = Queue(maxsize=1)
+            init_gen_thread = tts_manager.request_generation(initial_prompt_text_only, "piper_human", temp_q)
+            if init_gen_thread:
+                try:
+                    initial_audio_id = temp_q.get(timeout=tts_manager.tts_generate_timeout + 5)
+                except Empty:
+                    colored_print(Colors.ERROR, "Timeout waiting for initial prompt audio ID.")
+                # Join shouldn't be strictly necessary here as get() implies completion or timeout
+                # init_gen_thread.join(timeout=1.0)
+            else:
+                 colored_print(Colors.ERROR,"Failed to start initial prompt generation thread.")
+
+        # Play the initial audio (whether pre-generated or generated now)
         if initial_audio_id:
-            colored_print(Colors.SYSTEM, "Speaking initial human prompt...")
+            colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"(Speaking initial prompt [ID: {initial_audio_id[:8]}...])")
             tts_manager.request_playback(initial_audio_id, "piper_human")
         else:
-            colored_print(Colors.ERROR, "Failed to generate initial prompt audio (no ID received).")
-        # *** CORRECTED INDENTATION BLOCK ENDS HERE ***
+            colored_print(Colors.ERROR, "Failed to generate or use pre-generated initial prompt audio.")
     else:
         colored_print(Colors.SYSTEM, "Skipping initial human prompt speech (TTS unavailable).")
+
+    # Clean up the generation thread if it was started here
+    if init_gen_thread and init_gen_thread.is_alive():
+        init_gen_thread.join(timeout=0.5)
+
 
     # --- Conversation Loop ---
     try:
@@ -471,101 +515,78 @@ def simulate_conversation(
         active_llm_thread.start()
         pending_llm_server_id = current_llm_key
 
-        # Loop through turns (each loop iteration handles one LLM response and TTS)
-        # Need num_turns * 2 iterations for A->B->A->B...
+        # Loop through turns
         for turn_index in range(num_turns * 2):
             actual_turn_num = (turn_index // 2) + 1
             is_last_llm_response = (turn_index == (num_turns * 2) - 1)
 
             # --- 1. Wait for the pending LLM response ---
-            current_llm_key = pending_llm_server_id # This was set in the *previous* iteration (or before loop)
-            if not current_llm_key:
-                 colored_print(Colors.SYSTEM, "No pending LLM request. Ending loop.")
-                 break # Should not happen in normal flow unless last turn
+            current_llm_key = pending_llm_server_id
+            if not current_llm_key: break # Exit if no request is pending
             current_llm_info = server_config[current_llm_key]
-            colored_print(Colors.SYSTEM, f"Waiting for LLM response from {current_llm_info['name']}...")
+            current_server_name = current_llm_info['name']
+            current_server_color = current_llm_info['color']
+            colored_print(Colors.SYSTEM, f"Waiting for LLM response from {current_server_name}...")
+
             raw_response = None
-            llm_timed_out = False
             try:
-                 # Wait for result from the queue
-                 retrieved_id, queue_response = llm_result_queue.get(timeout=req_timeout + 15) # Add buffer to timeout
-                 if retrieved_id == current_llm_key:
-                     raw_response = queue_response
-                 else:
-                     # This indicates a logic error - the queue should only have the expected response
-                     colored_print(Colors.ERROR, f"LLM Queue Logic Error! Expected {current_llm_key}, got {retrieved_id}.")
-                     raw_response = None # Treat as failure
-            except Empty:
-                 colored_print(Colors.ERROR, f"Timeout waiting for LLM response from {current_llm_info['name']}.")
-                 llm_timed_out = True
-            except Exception as e:
-                 colored_print(Colors.ERROR, f"LLM Queue Error: {e}")
-                 traceback.print_exc()
+                 retrieved_id, queue_response = llm_result_queue.get(timeout=req_timeout + 15)
+                 if retrieved_id == current_llm_key: raw_response = queue_response
+                 else: colored_print(Colors.ERROR, f"LLM Queue Logic Error! Expected {current_llm_key}, got {retrieved_id}.")
+            except Empty: colored_print(Colors.ERROR, f"Timeout waiting for LLM response from {current_server_name}.")
+            except Exception as e: colored_print(Colors.ERROR, f"LLM Queue Error: {e}"); traceback.print_exc()
 
-            # Ensure the LLM thread object is cleaned up
-            if active_llm_thread and active_llm_thread.is_alive():
-                active_llm_thread.join(timeout=1.0) # Brief join timeout
+            if active_llm_thread and active_llm_thread.is_alive(): active_llm_thread.join(timeout=1.0)
             active_llm_thread = None
-            pending_llm_server_id = None # We've consumed the pending request
+            pending_llm_server_id = None
 
-            # --- 2. Process the LLM response ---
+            # --- 2. Process LLM Response (Store but DO NOT print) ---
             processed_response = None
             text_for_tts = None
             tts_key_for_current = None
+            current_playback_data = None # Info for *this* turn's potential playback
 
-            if raw_response: # If we received a non-empty string
-                processed_response = raw_response # Start with the raw response
-
-                # Optional: Clean human roleplay clause if forced (and if model included it)
+            if raw_response:
+                processed_response = raw_response # Start with raw
+                # Optional: Clean human roleplay clause
                 if force_human:
                     cleaned = processed_response.strip().replace(HUMAN_ROLEPLAY_CLAUSE.strip(), "").strip()
-                    if cleaned != processed_response.strip(): # Only update if changed
-                        processed_response = cleaned
-                        # colored_print(Colors.DEBUG, "Cleaned roleplay clause from response.")
+                    if cleaned != processed_response.strip(): processed_response = cleaned
 
                 if processed_response: # Check again after cleaning
-                    colored_print(current_llm_info['color'], f"{current_llm_info['name']}: {processed_response}")
-                    conversation_history.append(f"{current_llm_info['name']}: {processed_response}")
-                    text_for_tts = processed_response # Use the final processed text for speech
+                    # **DON'T PRINT HERE**
+                    # colored_print(current_server_color, f"{current_server_name}: {processed_response}") # <-- REMOVED
+                    conversation_history.append(f"{current_server_name}: {processed_response}")
+                    text_for_tts = processed_response
                     tts_key_for_current = current_llm_info.get('tts_server_pref')
+                    # Store data needed for potential playback later
+                    current_playback_data = (processed_response, tts_key_for_current, current_server_name, current_server_color)
+                else:
+                    colored_print(Colors.ERROR, f"{current_server_name} returned empty/cleaned response.")
+            else:
+                # Handle failed/empty response before cleaning
+                colored_print(Colors.ERROR, f"{current_server_name} failed or returned empty response.")
 
-                    # --- Placeholder: Interaction & Action Logic ---
-                    # This is where you'd parse processed_response for keywords
-                    response_lower = processed_response.lower()
-                    write_block_content = None
-                    extracted_prompt_to_add = None
-                    # Example (Needs full implementation):
-                    # if agreed_file_delimiter in response_lower: ... set write_block_content ...
-                    # if agreed_prompt_add_delimiter in response_lower: ... set extracted_prompt_to_add ...
-                    # if DEFAULT_FILE_READ_KEYWORD in processed_response: ... read file logic ...
-
-                    # Reset interaction states if action was taken/expected
-                    # if write_block_content: file_write_state = None ... perform write ...
-                    # if extracted_prompt_to_add: prompt_add_state = None ... add prompt ...
-
-            # Handle failed/empty response
+            # Reset interaction states on failure
             if not processed_response:
-                colored_print(Colors.ERROR, f"{current_llm_info['name']} failed or returned empty response.")
-                # Reset any pending interaction states if the response failed
                 if file_write_state in ['A_agreed', 'B_agreed']: file_write_state = None
                 if prompt_add_state in ['A_agreed_add', 'B_agreed_add']: prompt_add_state = None
-                if is_last_llm_response:
-                    break # Don't proceed if the last response failed
+                if is_last_llm_response: break # Don't proceed if the last response failed
 
             # --- 3. Start background TTS generation for the *current* response ---
+            #    (Only if we have text and TTS is working)
             if tts_manager.is_available() and text_for_tts and tts_key_for_current:
-                colored_print(Colors.SYSTEM, f"Starting background TTS generation for {current_llm_info['name']}...")
+                colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"Starting background TTS generation for {current_server_name}...")
                 active_tts_gen_thread = tts_manager.request_generation(text_for_tts, tts_key_for_current, tts_generate_queue)
             else:
-                active_tts_gen_thread = None # TTS disabled or no text to speak
+                active_tts_gen_thread = None # TTS disabled, no text, or key missing
 
-            # --- 4. Start the *next* LLM request in the background (if not the last turn) ---
+            # --- 4. Start the *next* LLM request (if applicable) ---
             if not is_last_llm_response:
-                next_llm_key = llm_server_keys[(turn_index + 1) % 2] # Alternate server
+                next_llm_key = llm_server_keys[(turn_index + 1) % 2]
                 next_llm_info = server_config[next_llm_key]
-                next_turn_indicator = actual_turn_num + 1 if next_llm_key == 'A' else actual_turn_num # For logging
+                next_turn_indicator = actual_turn_num + 1 if next_llm_key == 'A' else actual_turn_num
                 colored_print(Colors.SYSTEM, f"Starting background LLM request for {next_llm_info['name']} (Turn {next_turn_indicator})...")
-
                 active_llm_thread = threading.Thread(
                     target=request_worker,
                     args=(request_session, next_llm_info, conversation_history.copy(), llm_result_queue, next_llm_key,
@@ -573,79 +594,95 @@ def simulate_conversation(
                     daemon=True, name=f"LLM_{next_llm_key}_T{next_turn_indicator}"
                 )
                 active_llm_thread.start()
-                pending_llm_server_id = next_llm_key # Set the ID for the *next* loop iteration
+                pending_llm_server_id = next_llm_key
             else:
                 pending_llm_server_id = None # No more LLM requests needed
 
-            # --- 5. Play back the audio from the *previous* turn (if available) ---
-            # This happens *after* starting the next LLM request to maximize overlap
-            if audio_id_to_play and tts_key_to_play:
+            # --- 5. Play back audio from the *previous* turn (Print just before) ---
+            if playback_info_pending:
+                prev_text, prev_audio_id, prev_tts_key, prev_name, prev_color = playback_info_pending
                 if tts_manager.is_available():
-                    tts_manager.request_playback(audio_id_to_play, tts_key_to_play)
+                    # **PRINT NOW**
+                    colored_print(prev_color, f"{prev_name}: {prev_text}")
+                    colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"(Speaking for {prev_name} [ID: {prev_audio_id[:8]}...])")
+                    tts_manager.request_playback(prev_audio_id, prev_tts_key)
                 else:
-                     colored_print(Colors.SYSTEM, "Skipping playback (TTS unavailable).")
-            # Clear the playback variables regardless of whether playback happened
-            audio_id_to_play = None
-            tts_key_to_play = None
+                    # Print even if TTS is off, so text isn't lost
+                    colored_print(prev_color, f"{prev_name}: {prev_text}")
+                    colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, "(Skipping playback - TTS unavailable)")
+            # Clear the pending playback info regardless
+            playback_info_pending = None
 
-            # --- 6. Wait for the *current* TTS generation to finish ---
-            # We need the audio_id before the *next* loop iteration starts playback
+            # --- 6. Wait for *current* TTS generation & Prepare for *next* playback ---
             if active_tts_gen_thread:
-                 colored_print(Colors.SYSTEM, f"Waiting for TTS generation ID from {current_llm_info['name']}...")
+                 colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"Waiting for TTS generation ID from {current_server_name}...")
                  next_audio_id = None
                  try:
-                     next_audio_id = tts_generate_queue.get(timeout=tts_manager.tts_generate_timeout + 10) # Timeout for getting ID
-                 except Empty:
-                      colored_print(Colors.ERROR, f"Timeout waiting for generated audio ID for {current_llm_info['name']}.")
-                 except Exception as e:
-                      colored_print(Colors.ERROR, f"TTS Queue Error: {e}")
-                      traceback.print_exc()
+                     next_audio_id = tts_generate_queue.get(timeout=tts_manager.tts_generate_timeout + 10)
+                 except Empty: colored_print(Colors.ERROR, f"Timeout waiting for generated audio ID for {current_server_name}.")
+                 except Exception as e: colored_print(Colors.ERROR, f"TTS Queue Error: {e}"); traceback.print_exc()
 
-                 # If successful, store the ID and key for playback in the *next* iteration
-                 if next_audio_id:
-                     audio_id_to_play = next_audio_id
-                     tts_key_to_play = tts_key_for_current # The key corresponding to the *current* server
+                 # If successful, store info needed for the *next* iteration's playback
+                 if next_audio_id and current_playback_data:
+                     text, key, name, color = current_playback_data
+                     playback_info_pending = (text, next_audio_id, key, name, color) # Store details for next loop
                  else:
-                      colored_print(Colors.ERROR, f"TTS generation failed for {current_llm_info['name']}. No audio will be played.")
-                      audio_id_to_play = None # Ensure it's None if generation failed
-                      tts_key_to_play = None
+                      colored_print(Colors.ERROR, f"TTS generation failed or data missing for {current_server_name}. No audio will be played for this turn.")
+                      # Ensure pending is clear if generation failed
+                      playback_info_pending = None
 
                  # Clean up the TTS generation thread
-                 active_tts_gen_thread.join(timeout=1.0)
+                 if active_tts_gen_thread.is_alive(): active_tts_gen_thread.join(timeout=1.0)
                  active_tts_gen_thread = None
+            elif current_playback_data:
+                # If TTS gen wasn't started (e.g., TTS disabled), but we have text, prepare to print it next turn without audio
+                text, _, name, color = current_playback_data
+                playback_info_pending = (text, None, None, name, color) # Store text, name, color; audio ID/key are None
 
             # --- End of Loop Iteration ---
             if is_last_llm_response:
                  colored_print(Colors.SYSTEM, "Last LLM response processed.")
-                 break # Exit loop after handling the final response
+                 # Play the final pending audio/print final text *after* the loop
+                 break
 
             # Print turn marker for the *next* turn if it's starting
             next_actual_turn = ((turn_index + 1) // 2) + 1
-            if pending_llm_server_id and next_actual_turn > actual_turn_num: # Only print when the actual turn number increments
+            if pending_llm_server_id and next_actual_turn > actual_turn_num:
                 colored_print(Colors.HEADER, f"\n--- Turn {next_actual_turn}/{num_turns} ---")
 
     except KeyboardInterrupt:
-        colored_print(Colors.SYSTEM, "\nInterrupted by user.")
+        colored_print(Colors.SYSTEM, "\nInterrupted by user during conversation.")
+        raise # Re-raise to be caught by the outer loop handler
     except Exception as e:
         colored_print(Colors.ERROR, f"\nError during conversation simulation:")
         traceback.print_exc()
     finally:
+        # --- Play final pending audio/Print final text ---
+        if playback_info_pending:
+            final_text, final_audio_id, final_tts_key, final_name, final_color = playback_info_pending
+            # Print the text regardless of TTS availability
+            colored_print(final_color, f"{final_name}: {final_text}")
+            if final_audio_id and final_tts_key and tts_manager.is_available():
+                colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"(Speaking final response for {final_name} [ID: {final_audio_id[:8]}...])")
+                tts_manager.request_playback(final_audio_id, final_tts_key)
+            elif final_audio_id: # Audio was generated but TTS became unavailable?
+                colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, "(Skipping final playback - TTS unavailable)")
+
         colored_print(Colors.HEADER, "\n===== CONVERSATION END =====")
-        # Cleanup resources
+        # Cleanup threads that might still be lingering if loop exited abruptly
         if active_llm_thread and active_llm_thread.is_alive():
-            colored_print(Colors.SYSTEM, "Waiting for lingering LLM thread...")
-            active_llm_thread.join(timeout=2.0)
+            colored_print(Colors.SYSTEM, "Cleaning up lingering LLM thread...")
+            # No join needed - daemon thread
         if active_tts_gen_thread and active_tts_gen_thread.is_alive():
-            colored_print(Colors.SYSTEM, "Waiting for lingering TTS generation thread...")
-            active_tts_gen_thread.join(timeout=2.0)
-        if tts_manager:
-            tts_manager.shutdown()
-        if request_session:
-            request_session.close()
-        colored_print(Colors.SYSTEM, "Resources cleaned up.")
+            colored_print(Colors.SYSTEM, "Cleaning up lingering TTS generation thread...")
+            # No join needed - daemon thread
+
+        # **NO LONGER shuts down TTS Manager or Session here**
+        # colored_print(Colors.SYSTEM, "Conversation resources cleaned up.")
+
 
 # ===========================================================
-# Argparse Setup and Main Execution Block
+# Argparse Setup and Main Execution Block (Modified)
 # ===========================================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run LLM Conversation Simulation",
@@ -653,11 +690,14 @@ if __name__ == "__main__":
 
     # --- Conversation Setup Args ---
     parser.add_argument('--prompts_file', type=str, default=DEFAULT_PROMPTS_FILE_PATH,
-                        help="File containing initial prompts (one per line, '#' for comments).")
+                        help="File containing initial prompts (one per line, '#' for comments). Re-read if looping infinitely.")
     parser.add_argument('-t', '--turns', type=int, default=DEFAULT_NUM_TURNS,
                         help="Number of turns PER AI (e.g., 5 means A->B->A->B->A->B->A->B->A->B).")
     parser.add_argument('--initial_prompt', type=str, default=None,
-                        help="A single initial prompt to use instead of a prompts file.")
+                        help="A single initial prompt to use instead of a prompts file. Overrides --prompts_file.")
+    parser.add_argument('--loop', type=int, default=DEFAULT_LOOP_COUNT,
+                        help="Number of times to loop through all prompts. Set to 0 or negative for infinite looping.")
+
 
     # --- Behavior Args ---
     parser.add_argument('--human', action='store_true',
@@ -697,21 +737,22 @@ if __name__ == "__main__":
     parser.add_argument('--tts-url-human', type=str, default=SERVER_CONFIG['Human']['tts_url'],
                         help="URL for Piper/Aplay TTS Server for the initial prompt (e.g., http://localhost:5003).")
     parser.add_argument('--tts_timeout', type=int, default=DEFAULT_TTS_TIMEOUT,
-                        help="Timeout in seconds for TTS playback requests.")
+                        help="Timeout in seconds for TTS *playback* requests (generation has separate timeout).")
     parser.add_argument('--no-tts', action='store_true', help="Disable TTS checks and usage entirely.")
 
 
     args = parser.parse_args()
 
     # --- Update Server Config from Args ---
-    # Create a deep copy to avoid modifying the original constant
     current_server_config = json.loads(json.dumps(SERVER_CONFIG))
-
-    # Update LLM URLs
     current_server_config['A']['llm_url'] = args.llm_url_a
     current_server_config['B']['llm_url'] = args.llm_url_b
+    # TTS URLs updated below, before TTSManager init
 
-    # Update TTS URLs (or disable if --no-tts)
+    # --- Initialize Shared Resources (TTS Manager and Session) ---
+    colored_print(Colors.SYSTEM, "Initializing shared resources...")
+
+    # Update TTS URLs in config before passing to manager
     if args.no_tts:
         colored_print(Colors.SYSTEM, "TTS explicitly disabled via --no-tts argument.")
         current_server_config['A']['tts_url'] = None
@@ -722,72 +763,172 @@ if __name__ == "__main__":
         current_server_config['B']['tts_url'] = args.tts_url_b
         current_server_config['Human']['tts_url'] = args.tts_url_human
 
-    # --- Determine Prompts to Run ---
-    prompts_to_run = []
-    if args.initial_prompt:
-        prompts_to_run.append(args.initial_prompt)
-        colored_print(Colors.SYSTEM, "Using single prompt provided via --initial_prompt.")
-    else:
-        try:
-            with open(args.prompts_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    prompt_line = line.strip()
-                    # Add line if it's not empty and not a comment
-                    if prompt_line and not prompt_line.startswith('#'):
-                        prompts_to_run.append(prompt_line)
-            if not prompts_to_run:
-                colored_print(Colors.ERROR, f"No valid prompts found in '{args.prompts_file}'. Exiting.")
-                sys.exit(1)
-            colored_print(Colors.SYSTEM, f"Loaded {len(prompts_to_run)} prompts from '{args.prompts_file}'.")
-        except FileNotFoundError:
-            colored_print(Colors.ERROR, f"Prompts file not found: '{args.prompts_file}'. Exiting.")
-            sys.exit(1)
-        except Exception as e:
-            colored_print(Colors.ERROR, f"Error reading prompts file '{args.prompts_file}': {e}")
-            sys.exit(1)
+    # Pass combined config and timeout/disable flag
+    tts_manager = TTSManager(tts_config=current_server_config, tts_timeout=args.tts_timeout, no_tts=args.no_tts)
+    request_session = requests.Session()
+    colored_print(Colors.SYSTEM, "Shared resources initialized.")
 
-    # --- Run Simulation for Each Prompt ---
-    for i, current_initial_prompt in enumerate(prompts_to_run):
-        colored_print(Colors.HEADER, f"\n===== PROCESSING PROMPT {i+1}/{len(prompts_to_run)} =====")
-        colored_print(Colors.MESSAGE, f"Base Prompt: {current_initial_prompt}")
-        time.sleep(1) # Small delay for readability
 
-        final_initial_prompt = current_initial_prompt
+    # --- Main Loop ---
+    loop_iteration = 0
+    run_infinitely = args.loop <= 0
+    global_prompt_index = 0 # Track prompts across loops if needed, maybe not necessary
 
-        # Modify initial prompt based on flags
-        if args.aware:
-             # Add info about potential keywords the AI might use
-            awareness_clause = (f" (System Note: You might be able to use '{DEFAULT_FILE_READ_KEYWORD} <filename>' to read files, "
-                                f"'{args.file_delimiter}' to save conversation blocks, "
-                                f"or '{args.prompt_add_delimiter}' to add prompts.)")
-            final_initial_prompt += awareness_clause
-        if args.human:
-             # Append roleplay clause if not already present (simple check)
-             if not final_initial_prompt.rstrip().endswith(HUMAN_ROLEPLAY_CLAUSE.strip()):
-                 final_initial_prompt += HUMAN_ROLEPLAY_CLAUSE
+    # Variables for TTS lookahead
+    next_prompt_audio_q = Queue(maxsize=1)
+    next_prompt_audio_thread: Optional[threading.Thread] = None
+    pregenerated_audio_id: Optional[str] = None
 
-        # Determine file location (None if not specified, enabling/disabling feature)
-        file_loc = args.file_location if args.file_location else None
+    try:
+        while run_infinitely or loop_iteration < args.loop:
+            loop_iteration += 1
+            if run_infinitely:
+                colored_print(Colors.HEADER, f"\n===== STARTING INFINITE LOOP ITERATION {loop_iteration} =====")
+                time.sleep(1)
+            else:
+                colored_print(Colors.HEADER, f"\n===== STARTING LOOP ITERATION {loop_iteration}/{args.loop} =====")
 
-        # --- Start the simulation ---
-        simulate_conversation(
-            server_config=current_server_config,
-            num_turns=args.turns,
-            initial_prompt=final_initial_prompt,
-            req_timeout=args.timeout,
-            max_tokens=args.max_tokens,
-            temperature=args.temperature,
-            file_location=file_loc, # Pass None to disable saving
-            file_delimiter=args.file_delimiter,
-            prompts_file_path=args.prompts_file, # Pass for reference (e.g., adding prompts)
-            prompt_add_delimiter=args.prompt_add_delimiter,
-            tts_timeout=args.tts_timeout,
-            force_human=args.force_human,
-            debug_prompts=args.debug_prompts
-        )
-        colored_print(Colors.HEADER, f"===== FINISHED PROMPT {i+1}/{len(prompts_to_run)} =====")
-        # Add a small delay between runs if processing multiple prompts
-        if len(prompts_to_run) > 1 and i < len(prompts_to_run) - 1:
-            time.sleep(2)
+            # --- Determine Prompts to Run (Inside loop to allow refresh) ---
+            prompts_to_run = []
+            # (Prompt loading logic remains the same as before)
+            if args.initial_prompt:
+                if loop_iteration == 1 or not run_infinitely : # Only print this once unless looping finitely
+                     colored_print(Colors.SYSTEM, f"Using single prompt provided via --initial_prompt for iteration {loop_iteration}.")
+                prompts_to_run.append(args.initial_prompt)
+            else:
+                # Read from prompts file
+                try:
+                    with open(args.prompts_file, 'r', encoding='utf-8') as f:
+                        prompts_to_run = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                    if not prompts_to_run:
+                        colored_print(Colors.ERROR, f"No valid prompts found in '{args.prompts_file}' for iteration {loop_iteration}. Skipping iteration.")
+                        if run_infinitely: time.sleep(30); continue
+                        else: break # Stop if finite loop and no prompts
+                    colored_print(Colors.SYSTEM, f"Loaded {len(prompts_to_run)} prompts from '{args.prompts_file}' for iteration {loop_iteration}.")
+                except FileNotFoundError:
+                    colored_print(Colors.ERROR, f"Prompts file not found: '{args.prompts_file}'. Skipping iteration {loop_iteration}.")
+                    if run_infinitely: time.sleep(30); continue
+                    else: break
+                except Exception as e:
+                    colored_print(Colors.ERROR, f"Error reading prompts file '{args.prompts_file}' in iteration {loop_iteration}: {e}")
+                    traceback.print_exc()
+                    if run_infinitely: time.sleep(30); continue
+                    else: break
 
-    colored_print(Colors.SUCCESS, "\nAll prompts processed.")
+            # --- Run Simulation for Each Prompt in this Iteration ---
+            num_prompts_in_iter = len(prompts_to_run)
+            for i, current_initial_prompt in enumerate(prompts_to_run):
+                is_last_prompt_in_iter = (i == num_prompts_in_iter - 1)
+                colored_print(Colors.HEADER, f"\n--- Processing Prompt {i+1}/{num_prompts_in_iter} (Loop Iteration {loop_iteration}) ---")
+                # Base prompt text is printed inside simulate_conversation now
+
+                # --- Lookahead: Start generating TTS for the *next* prompt's initial text ---
+                if tts_manager.is_available() and not is_last_prompt_in_iter:
+                     next_prompt_text = prompts_to_run[i+1] # Get the next prompt text
+                     # Add human/aware clauses to the *next* prompt text for accurate TTS generation
+                     next_final_initial_prompt = next_prompt_text
+                     if args.aware: next_final_initial_prompt += f" (...awareness clause...)" # Simplified
+                     if args.human and not next_final_initial_prompt.rstrip().endswith(HUMAN_ROLEPLAY_CLAUSE.strip()):
+                          next_final_initial_prompt += " " + HUMAN_ROLEPLAY_CLAUSE
+
+                     colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"Lookahead: Starting TTS gen for next prompt ({i+2})...")
+                     next_prompt_audio_thread = tts_manager.request_generation(
+                         next_final_initial_prompt, # Use the potentially modified next prompt
+                         "piper_human",
+                         next_prompt_audio_q
+                     )
+                else:
+                     next_prompt_audio_thread = None # No lookahead if TTS off or last prompt
+
+                # --- Prepare final prompt text for *current* simulation ---
+                final_initial_prompt = current_initial_prompt
+                # (Modify current prompt text based on flags - same as before)
+                if args.aware:
+                    awareness_clause = (f" (System Note: You might be able to use '{DEFAULT_FILE_READ_KEYWORD} <filename>' to read files, "
+                                        f"'{args.file_delimiter}' to save conversation blocks, "
+                                        f"or '{args.prompt_add_delimiter}' to add prompts.)")
+                    final_initial_prompt += awareness_clause
+                if args.human:
+                    if not final_initial_prompt.rstrip().endswith(HUMAN_ROLEPLAY_CLAUSE.strip()):
+                        final_initial_prompt += " " + HUMAN_ROLEPLAY_CLAUSE
+
+                file_loc = args.file_location if args.file_location else None
+
+                # --- Start the simulation for the *current* prompt ---
+                try:
+                    simulate_conversation(
+                        # Pass shared resources
+                        tts_manager=tts_manager,
+                        request_session=request_session,
+                        # Pass config and args
+                        server_config=current_server_config,
+                        num_turns=args.turns,
+                        initial_prompt=final_initial_prompt,
+                        req_timeout=args.timeout,
+                        max_tokens=args.max_tokens,
+                        temperature=args.temperature,
+                        file_location=file_loc,
+                        file_delimiter=args.file_delimiter,
+                        prompts_file_path=args.prompts_file,
+                        prompt_add_delimiter=args.prompt_add_delimiter,
+                        tts_timeout=args.tts_timeout, # Pass for manager config
+                        force_human=args.force_human,
+                        debug_prompts=args.debug_prompts,
+                        # Pass pre-generated audio ID
+                        pregen_initial_audio_id=pregenerated_audio_id
+                    )
+                except KeyboardInterrupt:
+                     colored_print(Colors.SYSTEM, "\nKeyboardInterrupt caught during simulation. Stopping loop.")
+                     raise # Re-raise to exit the outer loop
+                except Exception as sim_error:
+                     colored_print(Colors.ERROR, f"\nError occurred during simulation for prompt {i+1}. Continuing loop if possible.")
+                     traceback.print_exc()
+                     # Optionally add recovery/skip logic here
+
+                colored_print(Colors.HEADER, f"--- FINISHED PROMPT {i+1}/{num_prompts_in_iter} (Loop Iteration {loop_iteration}) ---")
+
+                # --- Retrieve the result of the lookahead TTS generation ---
+                pregenerated_audio_id = None # Reset for next iteration
+                if next_prompt_audio_thread:
+                    colored_print(Colors.SYSTEM + Colors.TTS_ENGINE,"Waiting for lookahead TTS result...")
+                    try:
+                        pregenerated_audio_id = next_prompt_audio_q.get(timeout=tts_manager.tts_generate_timeout + 5)
+                        if pregenerated_audio_id:
+                            colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"Lookahead TTS complete (ID: {pregenerated_audio_id[:8]}...). Ready for next prompt.")
+                        else:
+                            colored_print(Colors.ERROR, "Lookahead TTS generation failed (returned None).")
+                    except Empty:
+                        colored_print(Colors.ERROR, "Timeout waiting for lookahead TTS result.")
+                    except Exception as q_err:
+                         colored_print(Colors.ERROR, f"Error getting lookahead TTS result: {q_err}")
+                    # Ensure thread is joined if it's still alive
+                    if next_prompt_audio_thread.is_alive():
+                        next_prompt_audio_thread.join(timeout=0.5)
+                next_prompt_audio_thread = None # Clear thread variable
+
+                # Add a small delay between prompts unless it's the very last one
+                if not is_last_prompt_in_iter:
+                    time.sleep(1) # Reduced delay
+
+            # Add a longer delay between full loop iterations if looping
+            if run_infinitely or loop_iteration < args.loop:
+                 colored_print(Colors.SYSTEM, f"Finished loop iteration {loop_iteration}. Pausing before next...")
+                 time.sleep(3) # Reduced delay
+
+    except KeyboardInterrupt:
+        colored_print(Colors.SYSTEM, "\nLoop interrupted by user. Exiting.")
+    except Exception as main_loop_error:
+         colored_print(Colors.ERROR, f"\nUnhandled error in main execution loop:")
+         traceback.print_exc()
+    finally:
+        # --- Cleanup Shared Resources ---
+        colored_print(Colors.SYSTEM, "Cleaning up shared resources...")
+        if tts_manager:
+            tts_manager.shutdown()
+        if request_session:
+            request_session.close()
+        # Wait for any final lookahead thread if interrupted mid-wait
+        if next_prompt_audio_thread and next_prompt_audio_thread.is_alive():
+             colored_print(Colors.SYSTEM, "Waiting for final lookahead TTS thread...")
+             # No join needed - daemon
+        colored_print(Colors.SUCCESS, "\nScript execution finished.")
