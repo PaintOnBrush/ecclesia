@@ -1,5 +1,5 @@
       
-# ai44 Conversation Simulator
+# Conversation Simulator
 
 ## Overview
 
