@@ -3,7 +3,7 @@
 
 ## Overview
 
-`ai44.py` simulates a multi-turn conversation between two Language Learning Models (LLMs), referred to as "David" (Server A) and "Zira" (Server B). The conversation is initiated by a "Human" prompt. The script integrates with external Piper TTS (Text-to-Speech) servers to provide spoken output for each participant's turn, including the initial Human prompt.
+`ai45.py` simulates a multi-turn conversation between two Language Learning Models (LLMs), referred to as "David" (Server A) and "Zira" (Server B). The conversation is initiated by a "Human" prompt. The script integrates with external Piper TTS (Text-to-Speech) servers to provide spoken output for each participant's turn, including the initial Human prompt.
 
 It utilizes Python's threading capabilities to perform LLM requests and TTS generation concurrently, aiming for a more seamless and natural-sounding interaction where one AI can process its response while the previous AI's response is being spoken. It also features TTS lookahead, pre-generating the audio for the *next* initial prompt while the current conversation is concluding.
 
@@ -98,6 +98,6 @@ Once all servers are running and the prompts file is ready, you can run the scri
 Uses `aiprompts.txt`, default server URLs, 5 turns per AI, default LLM parameters.
 
 ```bash
-python ai44.py
+python ai45.py
 
     
