@@ -19,7 +19,7 @@ for tts it might hook up to windows sapi and have success with piper hosted on w
 
     Crucially, it now tells ai34.py the path to aiprompts.txt using --prompts_file "%SCRIPT_DIR%%PROMPTS_FILE%".
 
-    Inside ai34.py, the simulate_conversation function receives this path.
+    Inside ai42.py, the simulate_conversation function receives this path.
 
     During the conversation, if David and Zira successfully use the prompt_add_delimiter (default: AGREE_ADD_PROMPT) consecutively, the script expects the second agreeing AI to provide the new prompt in its response, marked with "Prompt to add:\n".
 
@@ -29,9 +29,12 @@ for tts it might hook up to windows sapi and have success with piper hosted on w
 
 To Use:
 
-    Make sure both scripts (ai34.py, ai.bat) and the file (aiprompts.txt) are updated.
+    Make sure both scripts (ai42.py, aisr.bat) and the file (aiprompts.txt) are updated.
 
-    Run ai.bat.
+    python and llama-server requirements are met
+    two python requirement lists needed. windows side might have a lot of bloat on python requirement file.
+
+    Run llm.bat.
 
     Guide the AIs in their conversation:
 
