@@ -7,9 +7,9 @@ needs to pip install somethings.
 
 run both server bat files
 
-run third python script. latest version is 4.2 (ai42.py)
-
 for tts it might hook up to windows sapi and have success with piper hosted on wsl2.
+
+run third python script. latest version is 4.2 (ai42.py)
 
 ```How it Works Now:
 
