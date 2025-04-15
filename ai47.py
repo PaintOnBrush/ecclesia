@@ -1,4 +1,4 @@
-# ai46.py - Final Code (Simplified Player Shutdown Synchronization)
+# ai47.py - Final Code (Removed Initial TTS Lookahead, Kept LLM Lookahead)
 
 # --- Imports ---
 import requests
@@ -43,7 +43,7 @@ def colored_print(color: str, message: str):
 
 # === TTS Manager ===
 class TTSManager:
-    # (No changes needed)
+    # (No changes)
     def __init__(self, tts_config: Dict[str, Dict[str, Any]], tts_timeout: int = DEFAULT_TTS_TIMEOUT, no_tts: bool = False):
         self.engine_type: Optional[str] = None; self.tts_servers: Dict[str, Optional[str]] = {}
         self.tts_timeout = tts_timeout; self.tts_generate_timeout = 60
@@ -130,6 +130,7 @@ def send_llm_request(
     max_tokens: int, temperature: float, timeout: int, force_human: bool, debug_prompts: bool,
     stop_words: List[str] = BASE_STOP_WORDS
 ) -> Optional[str]:
+    # (No changes needed)
     url = server_config.get('llm_url'); server_name = server_config.get('name', 'UnknownServer')
     if not url: colored_print(Colors.ERROR, f"LLM URL missing for server '{server_name}'."); return None
     prompt_base = "\n".join(message_history).strip()
@@ -163,6 +164,7 @@ def request_worker(
     result_queue: Queue, server_id: str, max_tokens: int, temperature: float, timeout: int,
     force_human: bool, debug_prompts: bool, stop_words: List[str]
 ):
+    # (No changes needed)
     current_stop_words = stop_words[:]; other_server_name = None; server_name = server_config.get('name', 'UnknownServer')
     if server_id == 'A' or server_id.startswith('A_'): other_server_name = SERVER_CONFIG['B']['name']
     elif server_id == 'B' or server_id.startswith('B_'): other_server_name = SERVER_CONFIG['A']['name']
@@ -177,12 +179,13 @@ def request_worker(
 
 # --- tts_player_worker ---
 def tts_player_worker(playback_queue: Queue, tts_manager: TTSManager, stop_event: threading.Event, total_turns: int):
+    # (No changes needed)
     colored_print(Colors.SYSTEM, "TTS Player Thread started.")
     turn_header_printed_for = -1
     while not stop_event.is_set():
         try:
             item = playback_queue.get(timeout=1.0)
-            if item is None: colored_print(Colors.DEBUG, "Player thread received sentinel."); playback_queue.task_done(); break # Exit loop
+            if item is None: colored_print(Colors.DEBUG, "Player thread received sentinel."); playback_queue.task_done(); break
             turn_num, text, audio_id, tts_key, name, color = item
             try:
                 if turn_num > 0 and turn_num != turn_header_printed_for:
@@ -193,9 +196,7 @@ def tts_player_worker(playback_queue: Queue, tts_manager: TTSManager, stop_event
                     colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"(Speaking for {name} [ID: {audio_id[:8]}...])")
                     tts_manager.request_playback(audio_id, tts_key)
             except Exception as play_err: colored_print(Colors.ERROR, f"Error during playback processing for {name} (Turn {turn_num}): {play_err}"); traceback.print_exc()
-            finally:
-                 # Ensure task_done is called even if playback errors
-                 playback_queue.task_done()
+            finally: playback_queue.task_done()
         except Empty:
             if stop_event.is_set() and playback_queue.empty():
                  colored_print(Colors.DEBUG, "Player queue empty and stop event set. Exiting.")
@@ -210,7 +211,7 @@ def simulate_conversation(
     num_turns: int, initial_prompt: str, req_timeout: int, max_tokens: int, temperature: float,
     file_location: Optional[str], file_delimiter: str, prompts_file_path: str, prompt_add_delimiter: str,
     tts_timeout: int, force_human: bool, debug_prompts: bool, debug_logic: bool,
-    pregen_initial_audio_id: Optional[str] = None,
+    # ** REMOVED pregen_initial_audio_id **
     initial_llm_thread: Optional[threading.Thread] = None,
     initial_llm_queue: Optional[Queue] = None,
     prompt_global_num: int = 0
@@ -236,36 +237,48 @@ def simulate_conversation(
     player_thread = threading.Thread(target=tts_player_worker, args=(playback_queue, tts_manager, player_stop_event, total_ai_turns), name=f"TTSPlayer_P{prompt_global_num}", daemon=False)
     player_thread.start()
 
-    initial_audio_id = pregen_initial_audio_id; initial_tts_key = server_config['Human']['tts_server_pref']
-    initial_name = server_config['Human']['name']; initial_color = Colors.HUMAN_SPEAKER
-    initial_gen_thread : Optional[threading.Thread] = None; initial_generation_q = Queue(maxsize=1)
-    if initial_audio_id is None and tts_manager.is_available():
-         if debug_logic: colored_print(Colors.DEBUG, "Starting initial prompt TTS generation...")
+    # --- Initial Prompt Handling (Generate & Queue JUST IN TIME) ---
+    # ** Removed reliance on pregen_initial_audio_id **
+    initial_audio_id : Optional[str] = None
+    initial_tts_key = server_config['Human']['tts_server_pref']
+    initial_name = server_config['Human']['name']
+    initial_color = Colors.HUMAN_SPEAKER
+    initial_gen_thread : Optional[threading.Thread] = None
+    initial_generation_q = Queue(maxsize=1)
+
+    # Generate initial prompt audio now
+    if tts_manager.is_available():
+         if debug_logic: colored_print(Colors.DEBUG, "Starting initial prompt TTS generation (Just-In-Time)...")
          initial_gen_thread = tts_manager.request_generation(initial_prompt_text_only, initial_tts_key, initial_generation_q)
          if not initial_gen_thread: colored_print(Colors.ERROR,"Failed to start initial prompt generation.")
 
+    # --- Start First LLM Request (if not pre-started) ---
     llm_server_keys = ['A', 'B']
-    if not active_llm_thread:
+    if not active_llm_thread: # If lookahead wasn't passed or failed
         current_llm_key = llm_server_keys[0]
         colored_print(Colors.SYSTEM, f"Starting LLM request for Turn 1 ({current_llm_key})...")
         current_llm_info = server_config[current_llm_key]
         active_llm_thread = threading.Thread(target=request_worker, args=(request_session, current_llm_info, conversation_history.copy(), llm_result_queue, current_llm_key, max_tokens, temperature, int(req_timeout * 1.5), force_human, debug_prompts, BASE_STOP_WORDS.copy()), daemon=True, name=f"LLM_{current_llm_key}_T1")
         active_llm_thread.start()
         pending_llm_server_id = current_llm_key
-    else:
+    else: # If lookahead thread was passed
          if debug_logic: colored_print(Colors.DEBUG, "Using pre-started LLM thread for Turn 1 (A)...")
+         # pending_llm_server_id is already 'A'
 
+    # --- Wait Initial TTS & Queue ---
     if initial_gen_thread:
          if debug_logic: colored_print(Colors.DEBUG, "Waiting for initial prompt TTS generation result...")
          try: initial_audio_id = initial_generation_q.get(timeout=tts_manager.tts_generate_timeout + 10)
          except Empty: colored_print(Colors.ERROR, "Timeout waiting for initial prompt TTS generation.")
          except Exception as e: colored_print(Colors.ERROR, f"Error getting initial TTS result: {e}")
+    # Queue the initial prompt item
     initial_playback_item = (0, initial_prompt_text_only, initial_audio_id, initial_tts_key, initial_name, initial_color)
     try:
         if debug_logic: colored_print(Colors.DEBUG, "Queueing initial prompt for playback...")
         playback_queue.put(initial_playback_item)
     except Full: colored_print(Colors.ERROR, "Playback queue full, cannot add initial prompt!")
 
+    # --- Conversation Loop ---
     try:
         target_iterations = total_ai_turns * 2
         if debug_logic: colored_print(Colors.DEBUG, f"Starting conversation loop: target_iterations={target_iterations}, num_turns={total_ai_turns}")
@@ -286,11 +299,13 @@ def simulate_conversation(
             if debug_logic: colored_print(Colors.DEBUG, f"Waiting for LLM response from {current_server_name}...")
             raw_response = None; llm_request_failed = False; retrieved_id = None; queue_response = "NO_RESPONSE_YET"
             try:
+                # Use the correct queue for the first turn if pre-started
                 current_llm_result_queue = initial_llm_queue if turn_index == 0 and initial_llm_queue else llm_result_queue
                 retrieved_id, queue_response = current_llm_result_queue.get(timeout=req_timeout + 15)
-                while retrieved_id is not None and retrieved_id.endswith("_Lookahead"):
-                     colored_print(Colors.DEBUG, f"Ignoring lookahead result for {retrieved_id} in main queue.")
-                     retrieved_id, queue_response = current_llm_result_queue.get(timeout=req_timeout + 5)
+
+                # We don't expect lookahead results here anymore with this structure
+                # while retrieved_id is not None and retrieved_id.endswith("_Lookahead"): ... removed ...
+
                 expected_id = 'A' if turn_index == 0 and initial_llm_queue else current_llm_key
                 if retrieved_id == expected_id:
                      raw_response = queue_response
@@ -355,17 +370,16 @@ def simulate_conversation(
 
             # --- Loop End Check ---
             if debug_logic: colored_print(Colors.DEBUG, f"--- Loop End Check: turn_index={turn_index}, target_iterations={target_iterations}, is_last_iteration={is_last_iteration} ---")
-            # Loop terminates naturally after last iteration
+            # Loop terminates naturally
 
     except KeyboardInterrupt: colored_print(Colors.SYSTEM, "\nInterrupted by user during conversation."); raise
     except Exception as e: colored_print(Colors.ERROR, f"\nError during conversation simulation:"); traceback.print_exc()
     finally:
         colored_print(Colors.SYSTEM, "Conversation loop finished. Waiting for player to complete...")
         try:
-             playback_queue.put(None) # Send sentinel *BEFORE* joining queue
+             playback_queue.put(None) # Send sentinel
              if debug_logic: colored_print(Colors.DEBUG, f"Waiting for playback queue to empty (qsize ~{playback_queue.qsize()})...")
-             playback_queue.join() # **** WAIT FOR QUEUE TO BE EMPTY ****
-             # Now that queue is empty, we know player received sentinel and should exit
+             playback_queue.join() # Wait for all items (including sentinel) to be processed
              if debug_logic: colored_print(Colors.DEBUG,"Playback queue empty. Setting stop event and joining player thread...")
              player_stop_event.set() # Ensure stop is set
              player_thread.join(timeout=15) # Join with a reasonable timeout
@@ -418,8 +432,9 @@ if __name__ == "__main__":
     colored_print(Colors.SYSTEM, "Shared resources initialized.")
 
     loop_iteration = 0; run_infinitely = args.loop <= 0
-    next_prompt_tts_audio_q = Queue(maxsize=1); next_prompt_tts_audio_thread: Optional[threading.Thread] = None
-    pregenerated_tts_audio_id: Optional[str] = None
+    # ** REMOVED TTS Lookahead Variables **
+    # next_prompt_tts_audio_q = Queue(maxsize=1); next_prompt_tts_audio_thread: Optional[threading.Thread] = None
+    # pregenerated_tts_audio_id: Optional[str] = None
     next_prompt_llm_thread: Optional[threading.Thread] = None
     next_prompt_llm_queue: Queue = Queue(maxsize=1)
 
@@ -462,7 +477,7 @@ if __name__ == "__main__":
                         file_location=file_loc, file_delimiter=args.file_delimiter, prompts_file_path=args.prompts_file, prompt_add_delimiter=args.prompt_add_delimiter,
                         tts_timeout=args.tts_timeout, force_human=args.force_human, debug_prompts=args.debug_prompts,
                         debug_logic=args.debug_logic,
-                        pregen_initial_audio_id=pregenerated_tts_audio_id,
+                        # ** REMOVED pregen_initial_audio_id **
                         initial_llm_thread=current_initial_llm_thread,
                         initial_llm_queue=current_initial_llm_queue,
                         prompt_global_num=global_prompt_num
@@ -470,24 +485,16 @@ if __name__ == "__main__":
                 except KeyboardInterrupt: raise
                 except Exception as sim_error: colored_print(Colors.ERROR, f"\nError during simulation for prompt {global_prompt_num}. Continuing."); traceback.print_exc()
 
-                pregenerated_tts_audio_id = None
-                if next_prompt_tts_audio_thread:
-                    try:
-                        pregenerated_tts_audio_id = next_prompt_tts_audio_q.get(timeout=tts_manager.tts_generate_timeout + 5 if tts_manager.is_available() else 1)
-                        if pregenerated_tts_audio_id: colored_print(Colors.SYSTEM + Colors.TTS_ENGINE, f"Lookahead TTS complete (ID: {pregenerated_tts_audio_id[:8]}...). Ready for next prompt.")
-                    except Empty: colored_print(Colors.ERROR, "Timeout waiting for lookahead TTS result.")
-                    except Exception as q_err: colored_print(Colors.ERROR, f"Error getting lookahead TTS result: {q_err}")
-                    if next_prompt_tts_audio_thread.is_alive(): next_prompt_tts_audio_thread.join(timeout=0.5)
-                next_prompt_tts_audio_thread = None
+                # ** REMOVED TTS Lookahead Retrieval **
 
+                # --- Start LLM Lookahead for the *next* prompt ---
                 if not is_last_prompt_in_iter:
                     next_prompt_index = i + 1; next_prompt_text = prompts_to_run[next_prompt_index]; next_global_prompt_num = global_prompt_num + 1
                     next_final_initial_prompt = next_prompt_text
                     if args.aware: next_final_initial_prompt += f" (...awareness...)"
                     if args.human and not next_final_initial_prompt.rstrip().endswith(HUMAN_ROLEPLAY_CLAUSE.strip()): next_final_initial_prompt += " " + HUMAN_ROLEPLAY_CLAUSE
 
-                    if tts_manager.is_available(): next_prompt_tts_audio_thread = tts_manager.request_generation(next_final_initial_prompt, "piper_human", next_prompt_tts_audio_q)
-                    else: next_prompt_tts_audio_thread = None
+                    # ** REMOVED TTS Lookahead Start **
 
                     colored_print(Colors.SYSTEM, f"Starting LLM Lookahead for prompt #{next_global_prompt_num} Turn 1...")
                     next_initial_history = [f"{current_server_config['Human']['name']}: {next_final_initial_prompt}"]
@@ -503,7 +510,15 @@ if __name__ == "__main__":
 
                 if not is_last_prompt_in_iter: time.sleep(0.2)
 
-            if run_infinitely or loop_iteration < args.loop: time.sleep(1)
+            # Check if the loop should actually stop based on args.loop
+            if not run_infinitely and loop_iteration >= args.loop:
+                 colored_print(Colors.SYSTEM, f"Reached target loop count ({args.loop}). Stopping.")
+                 break # Exit the main while loop
+
+            # Only sleep if we are going to loop again
+            if run_infinitely or loop_iteration < args.loop:
+                 time.sleep(1)
+
 
     except KeyboardInterrupt: colored_print(Colors.SYSTEM, "\nLoop interrupted by user. Exiting.")
     except Exception as main_loop_error: colored_print(Colors.ERROR, f"\nUnhandled error in main execution loop:"); traceback.print_exc()
