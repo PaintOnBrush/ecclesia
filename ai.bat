@@ -1,1 +1,1 @@
-python ai46.py --force-human --loop 0
+python ai47.py --force-human --loop 0
