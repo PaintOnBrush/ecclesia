@@ -1,4 +1,3 @@
-```markdown
 # AI Conversation Simulator (ai67.py)
 
 ## Overview
@@ -185,4 +184,3 @@ python ai67.py --log-summaries --summary-log-format simple # Or 'detailed'
 *   **LLM Errors / Early Exit:** Check `llama.cpp` server logs. Use `--debug-prompts` and `--debug-logic` to see the request flow and content. Increase `--timeout` or `--max_tokens` if needed. Check if models are appropriate for the task (chat vs. summarization).
 *   **Summarizer Fails:** Check the Summarizer LLM server logs. Use `--debug-prompts` and `--debug-context`. Ensure the model is suitable. Try simplifying the summarizer prompt instruction in `send_llm_request`. Verify `--llm-url-summarizer` is correct.
 *   **Voice Issues:** Ensure `load_voice_data` reports finding voices and creating teams. Double-check voice names in the `teams_config` list match filenames exactly.
-```
